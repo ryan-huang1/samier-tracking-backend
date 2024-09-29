@@ -3,9 +3,11 @@ import shutil
 import tempfile
 import uuid
 from flask import Flask, request, jsonify, send_file
+from flask_cors import CORS
 import sieve
 
 app = Flask(__name__)
+CORS(app)  # This enables CORS for all routes
 
 # Ensure the output directory exists
 output_dir = "sam2_output"

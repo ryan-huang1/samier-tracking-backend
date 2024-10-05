@@ -56,87 +56,109 @@ def process_video():
     with tempfile.NamedTemporaryFile(delete=False, suffix='.mov') as temp_video:
         video_file.save(temp_video.name)
         
-        # Process the video with SAM2
-        file = sieve.File(temp_video.name)
-        
-        prompts = [
-            {
-                "frame_index": 0,
-                "object_id": 1,
-                "points": [[x, y]],
-                "labels": [1]
+        try:
+            # Process the video with SAM2
+            file = sieve.File(temp_video.name)
+            
+            prompts = [
+                {
+                    "frame_index": 0,
+                    "object_id": 1,
+                    "points": [[x, y]],
+                    "labels": [True]  # Converted to boolean
+                }
+            ]
+            
+            model_type = "tiny"
+            debug_masks = True
+            multimask_output = False
+            bbox_tracking = True
+            pixel_confidences = False
+            start_frame = -1
+            end_frame = -1
+            frame_interval = 2
+            preview = False
+
+            # Initialize mask_prompts (empty if not used)
+            mask_prompts = sieve.File(url="")  # Ensure this is correctly initialized
+
+            sam2 = sieve.function.get("sieve/sam2")
+            output = sam2.run(
+                file=file,
+                prompts=prompts,
+                mask_prompts=mask_prompts,
+                model_type=model_type,
+                debug_masks=debug_masks,
+                multimask_output=multimask_output,
+                bbox_tracking=bbox_tracking,
+                pixel_confidences=pixel_confidences,
+                start_frame=start_frame,
+                end_frame=end_frame,
+                frame_interval=frame_interval,
+                preview=preview
+            )
+
+            debug_video, files = output
+
+            # Save bbox_tracking data
+            bbox_tracking_path = os.path.join(job_dir, "bbox_tracking.json")
+            shutil.copy(files['bbox_tracking'].path, bbox_tracking_path)
+
+            # Save debug video
+            debug_video_path = os.path.join(job_dir, "debug_video.mp4")
+            shutil.copy(debug_video.path, debug_video_path)
+
+            # Load the bbox_tracking JSON data
+            with open(bbox_tracking_path, 'r') as f:
+                bbox_data = json.load(f)
+
+            # Extract X and Y coordinates and timesteps, then convert to meters
+            x_values = []
+            y_values = []
+            time_steps = []
+
+            max_y_value = None
+
+            for frame_data in bbox_data.values():
+                for entry in frame_data:
+                    bbox = entry['bbox']
+                    # Calculate center points
+                    x_center = (bbox[0] + bbox[2]) / 2
+                    y_center = (bbox[1] + bbox[3]) / 2
+                    x_values.append(x_center * meters_per_pixel)
+                    y_values.append(y_center)
+                    time_steps.append(entry['timestep'])
+
+            # Flip Y values (video coordinate system flip)
+            max_y_value = max(y_values)
+            y_values_flipped = [(max_y_value - y) * meters_per_pixel for y in y_values]
+
+            # Calculate velocities
+            x_velocities = np.diff(x_values) / np.diff(time_steps)
+            y_velocities = np.diff(y_values_flipped) / np.diff(time_steps)
+            velocity_time_steps = time_steps[1:]  # Velocities correspond to intervals
+
+            # Prepare data for JSON response
+            response_data = {
+                "positions": {
+                    "time_steps": time_steps,
+                    "x_positions_meters": x_values,
+                    "y_positions_meters_flipped": y_values_flipped
+                },
+                "velocities": {
+                    "time_steps": velocity_time_steps,
+                    "x_velocities_m_per_s": x_velocities.tolist(),
+                    "y_velocities_m_per_s": y_velocities.tolist()
+                },
+                "debug_video_url": f'/get_debug_video/{job_id}'  # Include URL to fetch debug video
             }
-        ]
-        
-        model_type = "tiny"
-        debug_masks = True
-        multimask_output = False
-        bbox_tracking = True
-        pixel_confidences = False
-        start_frame = -1
-        end_frame = -1
-        preview = False
-        frame_interval = 2
 
-        sam2 = sieve.function.get("sieve/sam2")
-        output = sam2.run(file, model_type, prompts, debug_masks, multimask_output, bbox_tracking, pixel_confidences, start_frame, end_frame, frame_interval, preview)
+        except Exception as e:
+            # Clean up the temporary file in case of processing error
+            os.unlink(temp_video.name)
+            return jsonify({'error': str(e)}), 500
 
-        debug_video, files = output
-
-        # Save bbox_tracking data
-        bbox_tracking_path = os.path.join(job_dir, "bbox_tracking.json")
-        shutil.copy(files['bbox_tracking'].path, bbox_tracking_path)
-
-        # Save debug video
-        debug_video_path = os.path.join(job_dir, "debug_video.mp4")
-        shutil.copy(debug_video.path, debug_video_path)
-
-        # Load the bbox_tracking JSON data
-        with open(bbox_tracking_path, 'r') as f:
-            bbox_data = json.load(f)
-
-        # Extract X and Y coordinates and timesteps, then convert to meters
-        x_values = []
-        y_values = []
-        time_steps = []
-
-        max_y_value = None
-
-        for frame_data in bbox_data.values():
-            for entry in frame_data:
-                bbox = entry['bbox']
-                # Calculate center points
-                x_center = (bbox[0] + bbox[2]) / 2
-                y_center = (bbox[1] + bbox[3]) / 2
-                x_values.append(x_center * meters_per_pixel)
-                y_values.append(y_center)
-                time_steps.append(entry['timestep'])
-
-        # Flip Y values (video coordinate system flip)
-        max_y_value = max(y_values)
-        y_values_flipped = [(max_y_value - y) * meters_per_pixel for y in y_values]
-
-        # Calculate velocities
-        x_velocities = np.diff(x_values) / np.diff(time_steps)
-        y_velocities = np.diff(y_values_flipped) / np.diff(time_steps)
-        velocity_time_steps = time_steps[1:]  # Velocities correspond to intervals
-
-        # Prepare data for JSON response
-        response_data = {
-            "positions": {
-                "time_steps": time_steps,
-                "x_positions_meters": x_values,
-                "y_positions_meters_flipped": y_values_flipped
-            },
-            "velocities": {
-                "time_steps": velocity_time_steps,
-                "x_velocities_m_per_s": x_velocities.tolist(),
-                "y_velocities_m_per_s": y_velocities.tolist()
-            },
-            "debug_video_url": f'/get_debug_video/{job_id}'  # Include URL to fetch debug video
-        }
-
-    # Clean up the temporary file
+    # Clean up the temporary file after successful processing
     os.unlink(temp_video.name)
 
     # Return the position, velocity data, and debug video path as JSON
